@@ -1,0 +1,224 @@
+# .NET Core
+## Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+## Visual Studio 2022 cache/options directory
+.vs/
+
+## Visual Studio Code
+.vscode/
+*.code-workspace
+
+## JetBrains Rider
+.idea/
+*.sln.iml
+
+## User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## .NET Core
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## ASP.NET Scaffolding
+ScaffoldingReadMe.txt
+
+## Files built by Visual Studio
+*_i.c
+*_p.c
+*_h.h
+*.ilk
+*.meta
+*.obj
+*.iobj
+*.pch
+*.pdb
+*.ipdb
+*.pgc
+*.pgd
+*.rsp
+*.sbr
+*.tlb
+*.tli
+*.tlh
+*.tmp
+*.tmp_proj
+*_wpftmp.csproj
+*.log
+*.tlog
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc
+
+## NuGet Packages
+*.nupkg
+## NuGet Symbol Packages
+*.snupkg
+## The packages folder can be ignored because of Package Restore
+**/[Pp]ackages/*
+## except build/, which is used as an MSBuild target.
+!**/[Pp]ackages/build/
+## Uncomment if necessary however generally it will be regenerated when needed
+#!**/[Pp]ackages/repositories.config
+## NuGet v3's project.json files produces more ignorable files
+*.nuget.props
+*.nuget.targets
+
+## MSTest test Results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+## .NET Core
+*.dll
+*.exe
+*.deps.json
+*.runtimeconfig.json
+
+## Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+## Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+## Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.original
+
+## Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+
+## Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+appsettings.Development.json
+appsettings.Production.json
+appsettings.Local.json
+
+## Application specific
+api.log
+*.log
+logs/
+
+## OpenSearch/Elasticsearch data (if running locally)
+data/
+esdata/
+
+## Docker volumes
+docker-volumes/
+
+## Test results
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+## Publish output
+publish/
+out/
+
+## Node modules (if using any frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+## Python (if using any Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+venv/
+env/
+
+## Documentation build output
+_site/
+docs/_build/
+docs/_site/
+
+## Terraform (if using infrastructure as code)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+## Secrets and sensitive data
+*.pem
+*.key
+*.crt
+*.pfx
+secrets/
+credentials/
+
+## User-specific project files
+*.DotSettings.user
+launchSettings.json
+
+## Health check files
+health-check-tmp.db
+health-check-tmp.db-shm
+health-check-tmp.db-wal
+
+## Local SQLite databases (if any)
+*.db
+*.db-shm
+*.db-wal
+
+## Benchmark results
+BenchmarkDotNet.Artifacts/
+
+## JetBrains
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+## Others
+*.mdf
+*.ldf
+*.ndf
+
+##extras
+documentation
