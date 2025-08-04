@@ -62,5 +62,23 @@ namespace ProductSearchApi.Interfaces
         /// - Medical/Legal: 0.1-0.2 (precision-focused)
         /// </summary>
         public double VectorSearchWeight { get; set; } = 0.0;
+        
+        /// <summary>
+        /// Vector search algorithm to use
+        /// Options: "hnsw" (Hierarchical Navigable Small World), "ivf" (Inverted File Index), "flat" (brute force)
+        /// HNSW: Best for high recall, memory intensive
+        /// IVF: Good for large datasets, faster but lower recall
+        /// Flat: Exact search, slow but 100% accurate
+        /// </summary>
+        public string VectorAlgorithm { get; set; } = "hnsw";
+        
+        /// <summary>
+        /// Distance metric for vector similarity
+        /// Options: "cosine" (angular distance), "l2" (Euclidean), "dot_product" (inner product)
+        /// Cosine: Best for normalized embeddings, scale-invariant
+        /// L2: Good for absolute distances in vector space
+        /// Dot Product: Fast, good for normalized vectors
+        /// </summary>
+        public string DistanceMetric { get; set; } = "cosine";
     }
 }
