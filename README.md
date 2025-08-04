@@ -25,7 +25,7 @@ A proof-of-concept product search engine using OpenSearch as both search engine 
 
 The API will be available at `http://localhost:5000` with Swagger documentation at `http://localhost:5000/swagger`.
 
-## 📋 Core Functional Requirements
+## Core Functional Requirements
 
 This implementation fulfills all four core functional requirements from the specification:
 
