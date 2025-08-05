@@ -1,22 +1,21 @@
-using OpenSearch.Client;
-using OpenSearch.Net;
 using ProductSearchApi.DTOs;
+using ProductSearchApi.Interfaces;
 using System.Text;
 
 namespace ProductSearchApi.Services
 {
     /// <summary>
-    /// OpenSearch-based product service - uses OpenSearch as primary data persistence layer
+    /// Product service using ISearchEngine abstraction - can work with any search engine
     /// </summary>
     public class OpenSearchProductService : IProductService
     {
-        private readonly IOpenSearchClient _client;
+        private readonly ISearchEngine _searchEngine;
         private readonly ILogger<OpenSearchProductService> _logger;
-        private const string IndexName = "products";
+        private static int _idCounter = 1;
 
-        public OpenSearchProductService(IOpenSearchClient client, ILogger<OpenSearchProductService> logger)
+        public OpenSearchProductService(ISearchEngine searchEngine, ILogger<OpenSearchProductService> logger)
         {
-            _client = client;
+            _searchEngine = searchEngine;
             _logger = logger;
         }
 
@@ -24,31 +23,16 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                _logger.LogInformation("Getting all products from OpenSearch...");
+                _logger.LogInformation("Getting all products from search engine...");
                 
-                var searchResponse = await _client.SearchAsync<Product>(s => s
-                    .Index(IndexName)
-                    .Size(1000) // Get up to 1000 products
-                    .Query(q => q.MatchAll()) // Get all products first to debug
-                );
-
-                _logger.LogInformation("OpenSearch response: Valid={Valid}, Total={Total}, DocumentsCount={Count}", 
-                    searchResponse.IsValid, searchResponse.Total, searchResponse.Documents?.Count() ?? 0);
-
-                if (!searchResponse.IsValid)
-                {
-                    _logger.LogError("Failed to get all products: {Error}", searchResponse.DebugInformation);
-                    return Enumerable.Empty<Product>();
-                }
-
-                // Filter active products in memory for now
-                var activeProducts = searchResponse.Documents.Where(p => p.IsActive).ToList();
-                _logger.LogInformation("Returning {Count} active products", activeProducts.Count);
-                return activeProducts;
+                var products = await _searchEngine.GetAllAsync<Product>();
+                
+                _logger.LogInformation("Returning {Count} products", products.Count());
+                return products;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting all products from OpenSearch");
+                _logger.LogError(ex, "Error getting all products");
                 return Enumerable.Empty<Product>();
             }
         }
@@ -57,19 +41,13 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                var getResponse = await _client.GetAsync<Product>(id, g => g.Index(IndexName));
-
-                if (!getResponse.IsValid || !getResponse.Found)
-                {
-                    return null;
-                }
-
-                var product = getResponse.Source;
-                return product?.IsActive == true ? product : null;
+                _logger.LogInformation("Getting product with ID: {ProductId}", id);
+                var product = await _searchEngine.GetDocumentAsync<Product>(id);
+                return product;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting product by ID {Id} from OpenSearch", id);
+                _logger.LogError(ex, "Error getting product {ProductId}", id);
                 return null;
             }
         }
@@ -78,46 +56,33 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                // Generate new ID by finding the max existing ID
-                var maxIdResponse = await _client.SearchAsync<Product>(s => s
-                    .Index(IndexName)
-                    .Size(1)
-                    .Query(q => q.MatchAll())
-                );
-
-                int newId = 1;
-                if (maxIdResponse.IsValid && maxIdResponse.Documents.Any())
+                var product = new Product
                 {
-                    var maxId = maxIdResponse.Documents.Max(p => p.Id);
-                    newId = maxId + 1;
+                    Id = _idCounter++,
+                    Title = request.Title,
+                    Description = request.Description,
+                    Category = request.Category,
+                    Price = request.Price,
+                    Brand = request.Brand,
+                    Attributes = request.Attributes ?? new Dictionary<string, string>(),
+                    CreatedDate = DateTime.UtcNow,
+                    IsActive = true
+                };
+
+                var result = await _searchEngine.IndexDocumentAsync(product, product.Id);
+                
+                if (!result.Success)
+                {
+                    _logger.LogError("Failed to create product: {Error}", result.Error);
+                    throw new Exception("Failed to create product");
                 }
 
-                var product = new Product(newId, request.Title, request.Description, 
-                                        request.Category, request.Price, request.Brand);
-
-                if (request.Attributes != null)
-                {
-                    product.Attributes = new Dictionary<string, string>(request.Attributes);
-                }
-
-                var indexResponse = await _client.IndexAsync(product, i => i
-                    .Index(IndexName)
-                    .Id(product.Id)
-                    .Refresh(Refresh.True) // Ensure immediate availability
-                );
-
-                if (!indexResponse.IsValid)
-                {
-                    _logger.LogError("Failed to create product: {Error}", indexResponse.DebugInformation);
-                    throw new Exception($"Failed to create product: {indexResponse.DebugInformation}");
-                }
-
-                _logger.LogInformation("Created product with ID {Id}", product.Id);
+                _logger.LogInformation("Created product with ID: {ProductId}", product.Id);
                 return product;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating product in OpenSearch");
+                _logger.LogError(ex, "Error creating product");
                 throw;
             }
         }
@@ -126,64 +91,38 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                var createdProducts = new List<Product>();
+                _logger.LogInformation("Creating {Count} products in bulk", request.Products.Count);
 
-                // Prepare bulk operations
-                var bulkDescriptor = new BulkDescriptor();
-
-                foreach (var productRequest in request.Products)
+                var products = request.Products.Select(p => new Product
                 {
-                    // Generate incremental ID for each product  
-                    var maxIdResponse = await _client.SearchAsync<Product>(s => s
-                        .Index(IndexName)
-                        .Size(1)
-                        .Query(q => q.MatchAll())
-                    );
+                    Id = _idCounter++,
+                    Title = p.Title,
+                    Description = p.Description,
+                    Category = p.Category,
+                    Price = p.Price,
+                    Brand = p.Brand,
+                    Attributes = p.Attributes ?? new Dictionary<string, string>(),
+                    CreatedDate = DateTime.UtcNow,
+                    IsActive = true
+                }).ToList();
 
-                    int nextId = createdProducts.Count + 1;
-                    if (maxIdResponse.IsValid && maxIdResponse.Documents.Any())
+                var result = await _searchEngine.BulkIndexDocumentsAsync(products);
+
+                if (!result.Success)
+                {
+                    _logger.LogError("Bulk creation had errors: {Errors}", string.Join(", ", result.Errors));
+                    if (result.ItemsIndexed == 0)
                     {
-                        var maxId = maxIdResponse.Documents.Max(p => p.Id);
-                        nextId = maxId + createdProducts.Count + 1;
+                        throw new Exception("Failed to create any products");
                     }
-                    
-                    var product = new Product(nextId, productRequest.Title, productRequest.Description,
-                                            productRequest.Category, productRequest.Price, productRequest.Brand);
-
-                    if (productRequest.Attributes != null)
-                    {
-                        product.Attributes = new Dictionary<string, string>(productRequest.Attributes);
-                    }
-
-                    bulkDescriptor.Index<Product>(i => i
-                        .Index(IndexName)
-                        .Id(product.Id)
-                        .Document(product)
-                    );
-
-                    createdProducts.Add(product);
                 }
 
-                var bulkResponse = await _client.BulkAsync(bulkDescriptor.Refresh(Refresh.True));
-
-                if (!bulkResponse.IsValid)
-                {
-                    _logger.LogError("Bulk create failed: {Error}", bulkResponse.DebugInformation);
-                    throw new Exception($"Bulk create failed: {bulkResponse.DebugInformation}");
-                }
-
-                if (bulkResponse.Errors)
-                {
-                    var errorMessages = bulkResponse.ItemsWithErrors.Select(i => i.Error?.Reason).ToArray();
-                    _logger.LogWarning("Some bulk operations failed: {Errors}", string.Join(", ", errorMessages));
-                }
-
-                _logger.LogInformation("Bulk created {Count} products", createdProducts.Count);
-                return createdProducts;
+                _logger.LogInformation("Successfully created {Count} products", result.ItemsIndexed);
+                return products.Take(result.ItemsIndexed).ToList();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error bulk creating products in OpenSearch");
+                _logger.LogError(ex, "Error creating products in bulk");
                 throw;
             }
         }
@@ -192,81 +131,39 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                // First check if product exists
                 var existingProduct = await GetByIdAsync(id);
                 if (existingProduct == null)
                 {
                     return null;
                 }
 
-                // Create update script
-                var updateScript = new StringBuilder("ctx._source.");
-                var parameters = new Dictionary<string, object>();
-
-                if (!string.IsNullOrEmpty(request.Title))
-                {
-                    updateScript.Append("title = params.title; ");
-                    parameters["title"] = request.Title;
-                }
-
-                if (!string.IsNullOrEmpty(request.Description))
-                {
-                    updateScript.Append("description = params.description; ");
-                    parameters["description"] = request.Description;
-                }
-
-                if (!string.IsNullOrEmpty(request.Category))
-                {
-                    updateScript.Append("category = params.category; ");
-                    parameters["category"] = request.Category;
-                }
-
-                if (request.Price.HasValue)
-                {
-                    updateScript.Append("price = params.price; ");
-                    parameters["price"] = request.Price.Value;
-                }
-
-                if (!string.IsNullOrEmpty(request.Brand))
-                {
-                    updateScript.Append("brand = params.brand; ");
-                    parameters["brand"] = request.Brand;
-                }
-
+                // Update properties
+                existingProduct.Title = request.Title ?? existingProduct.Title;
+                existingProduct.Description = request.Description ?? existingProduct.Description;
+                existingProduct.Category = request.Category ?? existingProduct.Category;
+                existingProduct.Price = request.Price ?? existingProduct.Price;
+                existingProduct.Brand = request.Brand ?? existingProduct.Brand;
+                
                 if (request.Attributes != null)
                 {
-                    updateScript.Append("attributes = params.attributes; ");
-                    parameters["attributes"] = request.Attributes;
+                    existingProduct.Attributes = request.Attributes;
                 }
 
-                if (request.IsActive.HasValue)
+                var result = await _searchEngine.IndexDocumentAsync(existingProduct, id);
+                
+                if (!result.Success)
                 {
-                    updateScript.Append("isActive = params.isActive; ");
-                    parameters["isActive"] = request.IsActive.Value;
+                    _logger.LogError("Failed to update product: {Error}", result.Error);
+                    throw new Exception("Failed to update product");
                 }
 
-                var updateResponse = await _client.UpdateAsync<Product>(id, u => u
-                    .Index(IndexName)
-                    .Script(s => s
-                        .Source(updateScript.ToString())
-                        .Params(parameters)
-                    )
-                    .Refresh(Refresh.True)
-                );
-
-                if (!updateResponse.IsValid)
-                {
-                    _logger.LogError("Failed to update product {Id}: {Error}", id, updateResponse.DebugInformation);
-                    return null;
-                }
-
-                // Return updated product
-                return await GetByIdAsync(id);
+                _logger.LogInformation("Updated product with ID: {ProductId}", id);
+                return existingProduct;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error updating product {Id} in OpenSearch", id);
-                return null;
+                _logger.LogError(ex, "Error updating product {ProductId}", id);
+                throw;
             }
         }
 
@@ -274,27 +171,24 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                // Soft delete by setting isActive = false
-                var updateResponse = await _client.UpdateAsync<Product>(id, u => u
-                    .Index(IndexName)
-                    .Script(s => s
-                        .Source("ctx._source.isActive = false")
-                    )
-                    .Refresh(Refresh.True)
-                );
-
-                if (!updateResponse.IsValid)
+                _logger.LogInformation("Deleting product with ID: {ProductId}", id);
+                
+                var result = await _searchEngine.DeleteDocumentAsync(id);
+                
+                if (result)
                 {
-                    _logger.LogError("Failed to delete product {Id}: {Error}", id, updateResponse.DebugInformation);
-                    return false;
+                    _logger.LogInformation("Deleted product with ID: {ProductId}", id);
+                }
+                else
+                {
+                    _logger.LogWarning("Failed to delete product with ID: {ProductId}", id);
                 }
 
-                _logger.LogInformation("Soft deleted product {Id}", id);
-                return true;
+                return result;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error deleting product {Id} in OpenSearch", id);
+                _logger.LogError(ex, "Error deleting product {ProductId}", id);
                 return false;
             }
         }
@@ -303,41 +197,21 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                var searchResponse = await _client.SearchAsync<Product>(s => s
-                    .Index(IndexName)
-                    .Size(100)
-                    .Query(q => q
-                        .Bool(b => b
-                            .Must(
-                                m => m.MultiMatch(mm => mm
-                                    .Query(query)
-                                    .Fields(f => f
-                                        .Field(p => p.Title, 2.0)
-                                        .Field(p => p.Description)
-                                        .Field(p => p.Category)
-                                        .Field(p => p.Brand)
-                                    )
-                                    .Type(TextQueryType.BestFields)
-                                    .Fuzziness(Fuzziness.Auto)
-                                ),
-                                m => m.Term(t => t.Field("isActive").Value(true))
-                            )
-                        )
-                    )
-                    .Sort(sort => sort.Descending(SortSpecialField.Score))
-                );
+                _logger.LogInformation("Searching products with query: {Query}", query);
 
-                if (!searchResponse.IsValid)
+                var searchQuery = new SearchQuery
                 {
-                    _logger.LogError("Search failed: {Error}", searchResponse.DebugInformation);
-                    return Enumerable.Empty<Product>();
-                }
+                    Query = query,
+                    Page = 1,
+                    Size = 100
+                };
 
-                return searchResponse.Documents;
+                var result = await _searchEngine.SearchAsync<Product>(searchQuery);
+                return result.Documents;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error searching products in OpenSearch");
+                _logger.LogError(ex, "Error searching products");
                 return Enumerable.Empty<Product>();
             }
         }
@@ -346,31 +220,21 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                var searchResponse = await _client.SearchAsync<Product>(s => s
-                    .Index(IndexName)
-                    .Size(100)
-                    .Query(q => q
-                        .Bool(b => b
-                            .Must(
-                                m => m.Term(t => t.Field(f => f.Category).Value(category)),
-                                m => m.Term(t => t.Field("isActive").Value(true))
-                            )
-                        )
-                    )
-                    .Sort(sort => sort.Ascending(p => p.Id))
-                );
+                _logger.LogInformation("Getting products by category: {Category}", category);
 
-                if (!searchResponse.IsValid)
+                var searchQuery = new SearchQuery
                 {
-                    _logger.LogError("Get by category failed: {Error}", searchResponse.DebugInformation);
-                    return Enumerable.Empty<Product>();
-                }
+                    Filters = new Dictionary<string, object> { { "category", category } },
+                    Page = 1,
+                    Size = 100
+                };
 
-                return searchResponse.Documents;
+                var result = await _searchEngine.SearchAsync<Product>(searchQuery);
+                return result.Documents;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting products by category in OpenSearch");
+                _logger.LogError(ex, "Error getting products by category");
                 return Enumerable.Empty<Product>();
             }
         }
@@ -379,65 +243,32 @@ namespace ProductSearchApi.Services
         {
             try
             {
-                var searchResponse = await _client.SearchAsync<Product>(s => s
-                    .Index(IndexName)
-                    .Size(0) // We only want aggregations
-                    .Query(q => q.MatchAll())
-                    .Aggregations(a => a
-                        .Filter("active_products", f => f
-                            .Filter(ff => ff.Term(t => t.Field("isActive").Value(true)))
-                            .Aggregations(aa => aa
-                                .Terms("categories", t => t.Field(p => p.Category))
-                                .Terms("brands", t => t.Field(p => p.Brand))
-                                .Stats("price_stats", st => st.Field(p => p.Price))
-                            )
-                        )
-                        .Filter("deleted_products", f => f
-                            .Filter(ff => ff.Term(t => t.Field("isActive").Value(false)))
-                        )
-                    )
-                );
-
-                if (!searchResponse.IsValid)
-                {
-                    _logger.LogError("Get stats failed: {Error}", searchResponse.DebugInformation);
-                    return new { Error = "Failed to get statistics" };
-                }
-
-                var activeProductsAgg = searchResponse.Aggregations.Filter("active_products");
-                var deletedProductsAgg = searchResponse.Aggregations.Filter("deleted_products");
-                var categoriesAgg = activeProductsAgg.Terms("categories");
-                var brandsAgg = activeProductsAgg.Terms("brands");
-                var priceStatsAgg = activeProductsAgg.Stats("price_stats");
+                var allProducts = await GetAllAsync();
+                var productsList = allProducts.ToList();
 
                 var stats = new
                 {
-                    TotalProducts = (int)activeProductsAgg.DocCount,
-                    TotalDeleted = (int)deletedProductsAgg.DocCount,
-                    Categories = categoriesAgg.Buckets.Select(b => new 
-                    { 
-                        Category = b.Key, 
-                        Count = (int)b.DocCount 
-                    }).ToList(),
-                    Brands = brandsAgg.Buckets.Select(b => new 
-                    { 
-                        Brand = b.Key, 
-                        Count = (int)b.DocCount 
-                    }).ToList(),
-                    PriceRange = priceStatsAgg.Count > 0 ? new
+                    TotalProducts = productsList.Count,
+                    Categories = productsList.GroupBy(p => p.Category)
+                        .Select(g => new { Category = g.Key, Count = g.Count() })
+                        .OrderByDescending(x => x.Count),
+                    Brands = productsList.GroupBy(p => p.Brand)
+                        .Select(g => new { Brand = g.Key, Count = g.Count() })
+                        .OrderByDescending(x => x.Count),
+                    PriceRange = new
                     {
-                        Min = priceStatsAgg.Min,
-                        Max = priceStatsAgg.Max,
-                        Average = priceStatsAgg.Average
-                    } : null
+                        Min = productsList.Any() ? productsList.Min(p => p.Price) : 0,
+                        Max = productsList.Any() ? productsList.Max(p => p.Price) : 0,
+                        Average = productsList.Any() ? productsList.Average(p => p.Price) : 0
+                    }
                 };
 
                 return stats;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting stats from OpenSearch");
-                return new { Error = "Failed to get statistics" };
+                _logger.LogError(ex, "Error getting product stats");
+                throw;
             }
         }
     }

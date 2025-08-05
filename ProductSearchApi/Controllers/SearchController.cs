@@ -1,8 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
-using OpenSearch.Client;
-using OpenSearch.Net;
 using ProductSearchApi.Services;
 using ProductSearchApi.DTOs;
+using ProductSearchApi.Interfaces;
 
 namespace ProductSearchApi.Controllers
 {
@@ -11,25 +10,14 @@ namespace ProductSearchApi.Controllers
     public class SearchController : ControllerBase
     {
         private readonly ILogger<SearchController> _logger;
-        private readonly IOpenSearchClient _client;
-        private const string IndexName = "products";
+        private readonly ISearchEngine _searchEngine;
 
         public SearchController(
             ILogger<SearchController> logger,
-            IConfiguration configuration)
+            ISearchEngine searchEngine)
         {
             _logger = logger;
-
-            // Create direct OpenSearch client for search operations
-            var opensearchUrl = Environment.GetEnvironmentVariable("OPENSEARCH_URL") 
-                ?? configuration["OpenSearch:Url"] 
-                ?? "http://localhost:9200";
-            var settings = new ConnectionSettings(new Uri(opensearchUrl))
-                .DefaultIndex(IndexName)
-                .EnableDebugMode()
-                .PrettyJson()
-                .ThrowExceptions(false);
-            _client = new OpenSearchClient(settings);
+            _searchEngine = searchEngine;
         }
 
         /// <summary>
@@ -43,36 +31,49 @@ namespace ProductSearchApi.Controllers
             {
                 _logger.LogInformation("Executing search with query: {Query}", request.Query);
 
-                var searchRequest = BuildSearchQuery(request);
-                var searchResponse = await _client.SearchAsync<Product>(searchRequest);
-
-                if (!searchResponse.IsValid)
+                var searchQuery = new SearchQuery
                 {
-                    _logger.LogError("Search failed: {Error}", searchResponse.DebugInformation);
-                    return StatusCode(500, new { Error = "Search failed", Details = searchResponse.DebugInformation });
-                }
+                    Query = request.Query,
+                    Filters = new Dictionary<string, object>(),
+                    SortBy = MapSortField(request.Sort),
+                    SortDescending = request.Sort?.EndsWith("_desc") ?? false,
+                    Page = request.Page ?? 1,
+                    Size = request.Size ?? 10
+                };
+
+                // Add filters
+                if (!string.IsNullOrWhiteSpace(request.Filters?.Category))
+                    searchQuery.Filters["category"] = request.Filters.Category;
+                if (!string.IsNullOrWhiteSpace(request.Filters?.Brand))
+                    searchQuery.Filters["brand"] = request.Filters.Brand;
+                if (request.Filters?.MinPrice.HasValue == true)
+                    searchQuery.Filters["minPrice"] = request.Filters.MinPrice.Value;
+                if (request.Filters?.MaxPrice.HasValue == true)
+                    searchQuery.Filters["maxPrice"] = request.Filters.MaxPrice.Value;
+
+                var searchResponse = await _searchEngine.SearchAsync<Product>(searchQuery);
 
                 return Ok(new
                 {
                     Query = request.Query,
                     Filters = request.Filters,
                     Sort = request.Sort,
-                    Pagination = new { Page = request.Page, Size = request.Size },
+                    Pagination = new { Page = searchQuery.Page, Size = searchQuery.Size },
                     Results = new
                     {
                         Total = searchResponse.Total,
-                        Page = request.Page ?? 1,
-                        PageSize = request.Size ?? 10,
-                        TotalPages = (int)Math.Ceiling((double)(searchResponse.Total) / (request.Size ?? 10)),
-                        Products = searchResponse.Documents.Select(p => new
+                        Page = searchQuery.Page,
+                        PageSize = searchQuery.Size,
+                        TotalPages = (int)Math.Ceiling((double)searchResponse.Total / searchQuery.Size),
+                        Products = searchResponse.Hits.Select(h => new
                         {
-                            p.Id,
-                            p.Title,
-                            p.Description,
-                            p.Category,
-                            p.Brand,
-                            p.Price,
-                            Score = searchResponse.HitsMetadata?.Hits?.FirstOrDefault(h => h.Source?.Id == p.Id)?.Score
+                            h.Source.Id,
+                            h.Source.Title,
+                            h.Source.Description,
+                            h.Source.Category,
+                            h.Source.Brand,
+                            h.Source.Price,
+                            Score = h.Score
                         })
                     },
                     SearchType = "Advanced Search with Filtering, Sorting, and Pagination",
@@ -120,92 +121,16 @@ namespace ProductSearchApi.Controllers
 
         #region Helper Methods
 
-        private Func<SearchDescriptor<Product>, ISearchRequest> BuildSearchQuery(AdvancedSearchRequest request)
+        private string? MapSortField(string? sort)
         {
-            return s =>
+            if (string.IsNullOrWhiteSpace(sort))
+                return "relevance";
+
+            return sort.ToLower() switch
             {
-                var searchDescriptor = s.Index(IndexName);
-
-                // Build query with filters
-                var mustClauses = new List<QueryContainer>();
-                var filterClauses = new List<QueryContainer>();
-
-                // Always filter for active products
-                filterClauses.Add(new TermQuery { Field = "isActive", Value = true });
-
-                // Add text search if provided
-                if (!string.IsNullOrWhiteSpace(request.Query))
-                {
-                    mustClauses.Add(new MultiMatchQuery
-                    {
-                        Query = request.Query,
-                        Fields = new[] { "title^2", "description" }, // Title has 2x boost
-                        Type = TextQueryType.BestFields,
-                        Fuzziness = Fuzziness.Auto
-                    });
-                }
-
-                // Add category filter
-                if (!string.IsNullOrWhiteSpace(request.Filters?.Category))
-                {
-                    filterClauses.Add(new TermQuery { Field = "category", Value = request.Filters.Category });
-                }
-
-                // Add brand filter
-                if (!string.IsNullOrWhiteSpace(request.Filters?.Brand))
-                {
-                    filterClauses.Add(new TermQuery { Field = "brand", Value = request.Filters.Brand });
-                }
-
-                // Add price range filter
-                if (request.Filters?.MinPrice.HasValue == true || request.Filters?.MaxPrice.HasValue == true)
-                {
-                    var rangeQuery = new NumericRangeQuery { Field = "price" };
-                    if (request.Filters.MinPrice.HasValue)
-                        rangeQuery.GreaterThanOrEqualTo = (double)request.Filters.MinPrice.Value;
-                    if (request.Filters.MaxPrice.HasValue)
-                        rangeQuery.LessThanOrEqualTo = (double)request.Filters.MaxPrice.Value;
-                    filterClauses.Add(rangeQuery);
-                }
-
-                // Build final query
-                if (mustClauses.Any() || filterClauses.Any())
-                {
-                    searchDescriptor = searchDescriptor.Query(q => new BoolQuery
-                    {
-                        Must = mustClauses.Any() ? mustClauses : new QueryContainer[] { new MatchAllQuery() },
-                        Filter = filterClauses
-                    });
-                }
-                else
-                {
-                    searchDescriptor = searchDescriptor.Query(q => q.MatchAll());
-                }
-
-                // Add sorting
-                if (!string.IsNullOrWhiteSpace(request.Sort))
-                {
-                    switch (request.Sort.ToLower())
-                    {
-                        case "price_asc":
-                            searchDescriptor = searchDescriptor.Sort(sort => sort.Ascending(p => p.Price));
-                            break;
-                        case "price_desc":
-                            searchDescriptor = searchDescriptor.Sort(sort => sort.Descending(p => p.Price));
-                            break;
-                        case "relevance":
-                        default:
-                            searchDescriptor = searchDescriptor.Sort(sort => sort.Descending(SortSpecialField.Score));
-                            break;
-                    }
-                }
-
-                // Add pagination
-                var page = request.Page ?? 1;
-                var size = request.Size ?? 10;
-                searchDescriptor = searchDescriptor.From((page - 1) * size).Size(size);
-
-                return searchDescriptor;
+                "price_asc" or "price_desc" => "price",
+                "relevance" => "relevance",
+                _ => "relevance"
             };
         }
 

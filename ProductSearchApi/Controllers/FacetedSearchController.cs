@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using OpenSearch.Client;
-using OpenSearch.Net;
 using ProductSearchApi.DTOs;
+using ProductSearchApi.Interfaces;
 
 namespace ProductSearchApi.Controllers
 {
@@ -10,25 +9,14 @@ namespace ProductSearchApi.Controllers
     public class FacetedSearchController : ControllerBase
     {
         private readonly ILogger<FacetedSearchController> _logger;
-        private readonly IOpenSearchClient _client;
-        private const string IndexName = "products";
+        private readonly ISearchEngine _searchEngine;
 
         public FacetedSearchController(
             ILogger<FacetedSearchController> logger,
-            IConfiguration configuration)
+            ISearchEngine searchEngine)
         {
             _logger = logger;
-
-            // Create direct OpenSearch client for faceted search operations
-            var opensearchUrl = Environment.GetEnvironmentVariable("OPENSEARCH_URL") 
-                ?? configuration["OpenSearch:Url"] 
-                ?? "http://localhost:9200";
-            var settings = new ConnectionSettings(new Uri(opensearchUrl))
-                .DefaultIndex(IndexName)
-                .EnableDebugMode()
-                .PrettyJson()
-                .ThrowExceptions(false);
-            _client = new OpenSearchClient(settings);
+            _searchEngine = searchEngine;
         }
 
         /// <summary>
@@ -42,53 +30,53 @@ namespace ProductSearchApi.Controllers
             {
                 _logger.LogInformation("Getting facets for query: {Query}", request.Query ?? "all");
 
-                var searchResponse = await _client.SearchAsync<Product>(s => s
-                    .Index(IndexName)
-                    .Size(request.Size ?? 10)
-                    .Query(q => BuildSearchQuery(request))
-                    .Aggregations(aggs => aggs
-                        // Category facet
-                        .Terms("categories", t => t
-                            .Field(f => f.Category)
-                            .Size(20)
-                            .Order(o => o.CountDescending())
-                        )
-                        // Brand facet
-                        .Terms("brands", t => t
-                            .Field(f => f.Brand)
-                            .Size(15)
-                            .Order(o => o.CountDescending())
-                        )
-                        // Price range facet
-                        .Range("price_ranges", r => r
-                            .Field(f => f.Price)
-                            .Ranges(
-                                range => range.To(50),
-                                range => range.From(50).To(100),
-                                range => range.From(100).To(250),
-                                range => range.From(250).To(500),
-                                range => range.From(500).To(1000),
-                                range => range.From(1000)
-                            )
-                        )
-                    )
-                );
-
-                if (!searchResponse.IsValid)
+                var facetedQuery = new FacetedSearchQuery
                 {
-                    _logger.LogError("Faceted search failed: {Error}", searchResponse.DebugInformation);
-                    return StatusCode(500, new { Error = "Faceted search failed", Details = searchResponse.DebugInformation });
-                }
+                    Query = request.Query,
+                    Page = 1,
+                    Size = request.Size ?? 10,
+                    Filters = new Dictionary<string, object>(),
+                    FacetFields = new List<string> { "categories", "brands", "price_ranges" },
+                    FacetSizes = new Dictionary<string, int> 
+                    { 
+                        { "categories", 20 }, 
+                        { "brands", 15 } 
+                    }
+                };
 
-                var facets = ProcessFacets(searchResponse);
+                // Add filters
+                if (!string.IsNullOrWhiteSpace(request.Category))
+                    facetedQuery.Filters["category"] = request.Category;
+                if (!string.IsNullOrWhiteSpace(request.Brand))
+                    facetedQuery.Filters["brand"] = request.Brand;
+                if (request.MinPrice.HasValue)
+                    facetedQuery.Filters["minPrice"] = request.MinPrice.Value;
+                if (request.MaxPrice.HasValue)
+                    facetedQuery.Filters["maxPrice"] = request.MaxPrice.Value;
+
+                var searchResponse = await _searchEngine.SearchWithFacetsAsync<Product>(facetedQuery);
 
                 return Ok(new
                 {
                     SearchQuery = request.Query ?? "All products",
                     TotalResults = searchResponse.Total,
-                    TimeTaken = searchResponse.Took,
+                    TimeTaken = 0, // Search engine abstraction doesn't expose this
                     Results = searchResponse.Documents,
-                    Facets = facets,
+                    Facets = new
+                    {
+                        Categories = searchResponse.Facets.GetValueOrDefault("categories", new List<FacetBucket>())
+                            .Select(b => new { Category = b.Key, Count = (int)b.Count }),
+                        Brands = searchResponse.Facets.GetValueOrDefault("brands", new List<FacetBucket>())
+                            .Select(b => new { Brand = b.Key, Count = (int)b.Count }),
+                        PriceRanges = searchResponse.Facets.GetValueOrDefault("priceRanges", new List<FacetBucket>())
+                            .Select(b => new 
+                            { 
+                                Range = b.Key, 
+                                Count = (int)b.Count, 
+                                From = b.From, 
+                                To = b.To 
+                            })
+                    },
                     FacetType = "Guided Navigation Facets",
                     Description = "Core Requirement 3: Available filters and counts for current search result set"
                 });
@@ -124,93 +112,5 @@ namespace ProductSearchApi.Controllers
 
             return await GetFacets(request);
         }
-
-        #region Helper Methods
-
-        private QueryContainer BuildSearchQuery(FacetedSearchRequest request)
-        {
-            var mustClauses = new List<QueryContainer>();
-            var filterClauses = new List<QueryContainer>();
-
-            // Always filter for active products
-            filterClauses.Add(new TermQuery { Field = "isActive", Value = true });
-
-            // Add text search if provided
-            if (!string.IsNullOrWhiteSpace(request.Query))
-            {
-                mustClauses.Add(new MultiMatchQuery
-                {
-                    Query = request.Query,
-                    Fields = new[] { "title^2", "description", "category", "brand" },
-                    Type = TextQueryType.BestFields,
-                    Fuzziness = Fuzziness.Auto
-                });
-            }
-
-            // Add category filter
-            if (!string.IsNullOrWhiteSpace(request.Category))
-            {
-                filterClauses.Add(new TermQuery { Field = "category", Value = request.Category });
-            }
-
-            // Add brand filter
-            if (!string.IsNullOrWhiteSpace(request.Brand))
-            {
-                filterClauses.Add(new TermQuery { Field = "brand", Value = request.Brand });
-            }
-
-            // Add price range filter
-            if (request.MinPrice.HasValue || request.MaxPrice.HasValue)
-            {
-                var rangeQuery = new NumericRangeQuery { Field = "price" };
-                if (request.MinPrice.HasValue)
-                    rangeQuery.GreaterThanOrEqualTo = (double)request.MinPrice.Value;
-                if (request.MaxPrice.HasValue)
-                    rangeQuery.LessThanOrEqualTo = (double)request.MaxPrice.Value;
-                filterClauses.Add(rangeQuery);
-            }
-
-            // Build final query
-            if (mustClauses.Any() || filterClauses.Any())
-            {
-                return new BoolQuery
-                {
-                    Must = mustClauses.Any() ? mustClauses : new QueryContainer[] { new MatchAllQuery() },
-                    Filter = filterClauses
-                };
-            }
-
-            return new MatchAllQuery();
-        }
-
-        private object ProcessFacets(ISearchResponse<Product> response)
-        {
-            var categoriesAgg = response.Aggregations.Terms("categories");
-            var brandsAgg = response.Aggregations.Terms("brands");
-            var priceRangesAgg = response.Aggregations.Range("price_ranges");
-
-            return new
-            {
-                Categories = categoriesAgg.Buckets.Select(b => new
-                {
-                    Category = b.Key,
-                    Count = (int)b.DocCount
-                }).ToList(),
-                Brands = brandsAgg.Buckets.Select(b => new
-                {
-                    Brand = b.Key,
-                    Count = (int)b.DocCount
-                }).ToList(),
-                PriceRanges = priceRangesAgg.Buckets.Select(b => new
-                {
-                    Range = b.Key,
-                    Count = (int)b.DocCount,
-                    From = b.From,
-                    To = b.To
-                }).ToList()
-            };
-        }
-
-        #endregion
     }
 }

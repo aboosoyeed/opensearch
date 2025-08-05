@@ -7,26 +7,15 @@ Console.WriteLine();
 // Add services to the container (Dependency Injection)
 builder.Services.AddControllers();
 
-// Register OpenSearch client
-builder.Services.AddSingleton<OpenSearch.Client.IOpenSearchClient>(provider =>
-{
-    var configuration = provider.GetRequiredService<IConfiguration>();
-    var opensearchUrl = Environment.GetEnvironmentVariable("OPENSEARCH_URL") 
-        ?? configuration["OpenSearch:Url"] 
-        ?? "http://localhost:9200";
-    var settings = new OpenSearch.Client.ConnectionSettings(new Uri(opensearchUrl))
-        .DefaultIndex("products")
-        .EnableDebugMode()
-        .PrettyJson()
-        .ThrowExceptions(false);
-    return new OpenSearch.Client.OpenSearchClient(settings);
-});
+// Register search engine abstraction - allows switching between OpenSearch, Elasticsearch, etc.
+builder.Services.AddSingleton<ProductSearchApi.Interfaces.ISearchEngine, ProductSearchApi.Services.OpenSearchEngine>();
 
-// Register our product service - now using OpenSearch as data persistence layer
+// Register our product service - now using ISearchEngine abstraction
 builder.Services.AddSingleton<ProductSearchApi.Services.IProductService, ProductSearchApi.Services.OpenSearchProductService>();
 
-// Register OpenSearch service
+// Register OpenSearch service (still needed for index management)
 builder.Services.AddSingleton<ProductSearchApi.Services.IOpenSearchService, ProductSearchApi.Services.OpenSearchService>();
+
 
 
 // Configure JSON serialization options
