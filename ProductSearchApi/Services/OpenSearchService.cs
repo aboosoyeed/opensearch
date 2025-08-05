@@ -13,8 +13,10 @@ namespace ProductSearchApi.Services
         {
             _logger = logger;
 
-            // Get OpenSearch URL from configuration or use default
-            var opensearchUrl = configuration["OpenSearch:Url"] ?? "http://192.168.64.2:9200";
+            // Get OpenSearch URL from environment variable, configuration, or use default
+            var opensearchUrl = Environment.GetEnvironmentVariable("OPENSEARCH_URL") 
+                ?? configuration["OpenSearch:Url"] 
+                ?? "http://localhost:9200";
             
             // Create connection settings
             var settings = new ConnectionSettings(new Uri(opensearchUrl))

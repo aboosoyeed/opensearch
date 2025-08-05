@@ -16,7 +16,14 @@ A proof-of-concept product search engine using OpenSearch as both search engine 
    docker-compose up -d
    ```
 
-2. **Run the API**:
+2. **Configure OpenSearch URL** (optional):
+   ```bash
+   # Set environment variable if OpenSearch is not at default location
+   export OPENSEARCH_URL=http://localhost:9200
+   # Or for Minikube: export OPENSEARCH_URL=http://192.168.64.2:9200
+   ```
+
+3. **Run the API**:
    ```bash
    cd ProductSearchApi
    dotnet run

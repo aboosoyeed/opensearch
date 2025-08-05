@@ -22,7 +22,9 @@ namespace ProductSearchApi.Controllers
             _logger = logger;
 
             // Create direct OpenSearch client for search suggestions
-            var opensearchUrl = configuration["OpenSearch:Url"] ?? "http://192.168.64.2:9200";
+            var opensearchUrl = Environment.GetEnvironmentVariable("OPENSEARCH_URL") 
+                ?? configuration["OpenSearch:Url"] 
+                ?? "http://localhost:9200";
             var settings = new ConnectionSettings(new Uri(opensearchUrl))
                 .DefaultIndex(IndexName)
                 .EnableDebugMode()

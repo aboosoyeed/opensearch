@@ -11,7 +11,9 @@ builder.Services.AddControllers();
 builder.Services.AddSingleton<OpenSearch.Client.IOpenSearchClient>(provider =>
 {
     var configuration = provider.GetRequiredService<IConfiguration>();
-    var opensearchUrl = configuration["OpenSearch:Url"] ?? "http://192.168.64.2:9200";
+    var opensearchUrl = Environment.GetEnvironmentVariable("OPENSEARCH_URL") 
+        ?? configuration["OpenSearch:Url"] 
+        ?? "http://localhost:9200";
     var settings = new OpenSearch.Client.ConnectionSettings(new Uri(opensearchUrl))
         .DefaultIndex("products")
         .EnableDebugMode()
